@@ -7,7 +7,8 @@ from sklearn.model_selection import train_test_split
 from torchvision import transforms
 
 def deserilizer(batch_size: int, augmentation: bool=False, input_shape=(225, 225),
-                remove_same_case: bool=True, num_workers: int=0, verbose: bool=False):
+                remove_same_case: bool=True, num_workers: int=0, 
+                save_csv_dir: str=None, verbose: bool=False):
 
     data_transforms = get_data_transforms(input_shape=input_shape)
     if not augmentation:
@@ -16,6 +17,10 @@ def deserilizer(batch_size: int, augmentation: bool=False, input_shape=(225, 225
     df = data_collector(data_dir='./data/OCT-Tiff', remove_same_case=remove_same_case)
 
     train_df, valid_df, test_df = data_split(df, verbose=verbose)
+    if save_csv_dir:
+        train_df.to_csv(os.path.join(save_csv_dir, 'train_df.csv'))
+        valid_df.to_csv(os.path.join(save_csv_dir, 'valid_df.csv'))
+        test_df.to_csv(os.path.join(save_csv_dir, 'test_df.csv'))
 
     train_loader = torch.utils.data.DataLoader(OCT(df=train_df, transform=data_transforms['train']), shuffle=True, batch_size=batch_size, num_workers=num_workers)
     valid_loader = torch.utils.data.DataLoader(OCT(df=valid_df, transform=data_transforms['val']), shuffle=False, batch_size=batch_size, num_workers=num_workers)
@@ -24,18 +29,18 @@ def deserilizer(batch_size: int, augmentation: bool=False, input_shape=(225, 225
     return train_loader, valid_loader, test_loader
 
 
-def data_collector(data_dir: str="./data/OCT-Tiff", remove_same_case=True):
+def data_collector(data_dir: str="./data/OCT-Tiff", remove_same_case: bool=True):
     '''
     data_collector: find all the .TIFF images and summarize in a pd.DataFrame
     '''
     total_img_list = glob(os.path.join(data_dir, '*', '*', '*.TIFF'))
+    total_img_list = sorted(total_img_list)
     date_list = [item.split('/')[3] for item in total_img_list]
     case_list = [item.split('/')[4] for item in total_img_list]
     id_list = [item.split('/')[4].split('_')[0] for item in total_img_list]
     df = pd.DataFrame(zip(total_img_list, date_list, case_list, id_list), 
                       columns=['path', 'date', 'case', 'id'])
     
-
     if remove_same_case:
         remove_list = []
         for date in set(date_list):
@@ -76,8 +81,11 @@ def data_split(df: pd.DataFrame, random_seed: int=0, verbose: bool=True):
 
 
 class OCT(torch.utils.data.Dataset):
-    def __init__(self, df: pd.DataFrame, transform=None):
+    def __init__(self, df: pd.DataFrame, test_mode: bool=False, transform=None):
         """
+        df: pd.Dataframe contains columns
+            'path': image path
+            'date': to transfer to label
         """
         self.df = df
         self.transform = transform
@@ -88,6 +96,7 @@ class OCT(torch.utils.data.Dataset):
             'P90_1_10_2024': 3,
             'P120_2_8-2024': 4
         }
+        self.test = test_mode
 
     def __len__(self):
         return len(self.df)
@@ -101,9 +110,13 @@ class OCT(torch.utils.data.Dataset):
             img = self.transform(img)
         else:
             return transforms.ToTensor()(img)
-        lbl = self.class2index[self.df.iloc[idx]['date']]
-        lbl = torch.tensor(lbl)
-        return img, lbl
+        
+        if self.test:
+            return img
+        else:
+            lbl = self.class2index[self.df.iloc[idx]['date']]
+            lbl = torch.tensor(lbl)
+            return img, lbl
 
 
 def get_data_transforms(input_shape: tuple[int, int]=(225, 225)):
@@ -119,7 +132,7 @@ def get_data_transforms(input_shape: tuple[int, int]=(225, 225)):
         ]),
         "val":
         transforms.Compose(transforms=[
-            transforms.Resize((1000, 1000)),
+            transforms.Resize(input_shape),
             transforms.Grayscale(num_output_channels=3),
             transforms.ToTensor(),
         ])

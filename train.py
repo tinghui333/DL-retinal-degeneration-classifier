@@ -14,28 +14,29 @@ from model import ResNetClassifier
 
 
 def main(args):
+    save_dir = os.path.join(args.dir, f"{time.strftime('%Y%m%d-%H%M%S')}")
+    logger = TensorBoardLogger(save_dir=save_dir)
+    logger.log_hyperparams(args)
+
     print(f"building dataloader ...")
     train_loader, valid_loader, test_loader = dataloader(batch_size=args.bs, 
                                                          input_shape=(args.input_size, args.input_size), 
+                                                         save_csv_dir=save_dir if args.verbose else None,
                                                          verbose=args.verbose)
 
     print(f"building model ...")
     model = ResNetClassifier(num_classes=5)
 
-    save_dir = os.path.join(args.dir, f"{time.strftime('%Y%m%d-%H%M%S')}")
-    logger = TensorBoardLogger(save_dir=save_dir)
-    logger.log_hyperparams(args)
-
     early_stop_callback = EarlyStopping(
         monitor="val_loss", min_delta=0.00, 
-        patience=args.patience, verbose=False, mode="min"
+        patience=args.patience, verbose=args.verbose, mode="min"
     )
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=save_dir,
         every_n_train_steps=args.valid_steps,
         monitor="val_loss",
-        save_top_k=1,
+        save_top_k=3,
         filename="bestmodel",
         mode="min",
         verbose=True
@@ -71,6 +72,8 @@ def main(args):
     predictions = np.concatenate(predictions)
     predictions = np.argmax(predictions, axis=1)
     groundtrues = np.concatenate(groundtrues)
+    np.save(os.path.join(save_dir, 'pred.npy'), predictions)
+    np.save(os.path.join(save_dir, 'gt.npy'), groundtrues)
 
     conf_matrix = confusion_matrix(groundtrues, predictions)
     print(f"Confusion Matrix:\n {conf_matrix}")

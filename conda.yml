@@ -12,7 +12,7 @@ dependencies:
   - scikit-learn
   - scipy
   - torchmetrics=1.2.1
-  - torchvision=0.15.2
+  - torchvision=0.17
   - matplotlib
   - seaborn
   - Pillow

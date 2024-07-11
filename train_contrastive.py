@@ -1,9 +1,9 @@
 import os
-import sys
 import torch
 import argparse
 import numpy as np
 import time
+import pandas as pd
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
@@ -11,8 +11,10 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from sklearn.metrics import confusion_matrix
 
 from dataloader import deserilizer as dataloader
-from model import ResNetClassifier, AutoEncoder
+from dataloader import get_data_transforms, PairDataset
+from model import ResNetClassifier, SimCLR
 
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 
 def main(args):
     save_dir = os.path.join(args.dir, f"{time.strftime('%Y%m%d-%H%M%S')}")
@@ -20,22 +22,26 @@ def main(args):
     logger.log_hyperparams(args)
 
     print(f"building dataloader ...")
-    train_loader, valid_loader, test_loader = dataloader(batch_size=args.bs, 
-                                                         augmentation=True,
-                                                         input_shape=(args.input_size, args.input_size), 
-                                                         save_dir=save_dir if args.verbose else None,
-                                                         class_type=args.class_type,
-                                                         stack=args.stack, stride=args.stride,
-                                                         preprocess=args.preprocess,
-                                                         verbose=args.verbose)
+    
+    data_dir = './contrastive_learning'
+    train_df = pd.read_csv(os.path.join(data_dir, 'train_df.csv'))
+    valid_df = pd.read_csv(os.path.join(data_dir, 'valid_df.csv'))
+
+    data_transforms = get_data_transforms(input_shape=(args.input_size, args.input_size), 
+                                          preprocess=args.preprocess, data_mean=[0.3193], data_std=[0.1314])
+    
+
+    train_loader = torch.utils.data.DataLoader(PairDataset(df=train_df, 
+                                                           transform=data_transforms['train']), shuffle=True, 
+                                                           batch_size=args.bs, num_workers=4, pin_memory=True)
+    valid_loader = torch.utils.data.DataLoader(PairDataset(df=valid_df, 
+                                                           transform=data_transforms['val']), shuffle=False, 
+                                                           batch_size=args.bs, num_workers=4, pin_memory=True)
+
+
 
     print(f"building model ...")
-    if args.class_type == "timepoint":
-        model = ResNetClassifier(num_classes=5, loss=args.loss if args.loss else 'crossentropy')
-    elif args.class_type == "visual":
-        model = ResNetClassifier(stack=args.stack, loss=args.loss if args.loss else 'mse')
-    elif args.class_type == "autoencoder":
-        model = AutoEncoder(input_shape=(args.input_size, args.input_size))
+    model = SimCLR(max_epochs=args.epoch)
 
     early_stop_callback = EarlyStopping(
         monitor="val_loss", min_delta=0.00, 
@@ -68,38 +74,7 @@ def main(args):
     print(f"start training ...")
     trainer.fit(model, train_loader, valid_loader)
 
-    print(f"start testing")
-    if args.class_type == "timepoint":
-        model = model.load_from_checkpoint(os.path.join(save_dir, 'bestmodel.ckpt'), num_classes=5, stack=args.stack)
-    elif args.class_type == "visual":
-        model = model.load_from_checkpoint(os.path.join(save_dir, 'bestmodel.ckpt'), stack=args.stack)
-    elif args.class_type == 'autoencoder':
-        sys.exit("Stopping the program as class_type is 'autoencoder'")
-    model.eval()
-    predictions = []
-    groundtrues = []
-    for X, y in test_loader:
-        with torch.no_grad():
-            outputs = model(X.cuda())
-            predictions.append(outputs.cpu())
-            groundtrues.append(y)
 
-    predictions = np.concatenate(predictions)
-    groundtrues = np.concatenate(groundtrues)
-    np.save(os.path.join(save_dir, 'pred.npy'), predictions)
-    np.save(os.path.join(save_dir, 'gt.npy'), groundtrues)
-
-    if args.class_type == "timepoint":
-        predictions = np.argmax(predictions, axis=1)
-        conf_matrix = confusion_matrix(groundtrues, predictions)
-        print(f"Confusion Matrix:\n {conf_matrix}")
-    elif args.class_type == "visual":
-        mse_loss = np.mean((groundtrues - predictions) ** 2)
-        mae_loss = np.mean(np.abs(groundtrues - predictions))
-        print(f"MSE: {mse_loss} | MAE: {mae_loss}")
-        if save_dir:
-            with open(os.path.join(save_dir, 'result.txt'), 'w') as f:
-                f.write(f"MSE: {mse_loss} | MAE: {mae_loss}")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='train diverse tasks in biomedicine')

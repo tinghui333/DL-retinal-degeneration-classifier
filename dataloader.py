@@ -84,15 +84,15 @@ def data_collector(data_dir: str="./data/OCT-Tiff", remove_same_case: bool=True,
                 if len(right) > 1:
                     remove_list += right[1:]
 
-        df = df[~df['case'].isin(remove_list)].reset_index()
+        df = df[~df['case'].isin(remove_list)].reset_index(drop=True)
 
     if stack:
         remove_n = (stack - 1) * stride
         df = df.groupby(['case']).apply(remove_tail, count=remove_n)
 
-    if class_type == "timepoint":
-        df = df[df['date'] != 'P150']
-        df = df[df['date'] != 'P158']
+    if class_type in ("timepoint", "autoencoder"):
+        # df = df[df['date'] != 'P150']
+        # df = df[df['date'] != 'P158']
         return df
     
     elif class_type == "visual":
@@ -112,9 +112,9 @@ def data_split(df: pd.DataFrame, random_seed: int=0, verbose: bool=True):
 
     train_list, test_list = train_test_split(sorted(df['ID'].unique()), test_size=0.2, random_state=random_seed)
     train_list, valid_list = train_test_split(train_list, test_size=0.25, random_state=random_seed)
-    train_df = df[df['ID'].isin(train_list)].reset_index()
-    valid_df = df[df['ID'].isin(valid_list)].reset_index()
-    test_df = df[df['ID'] .isin(test_list)].reset_index()
+    train_df = df[df['ID'].isin(train_list)].reset_index(drop=True)
+    valid_df = df[df['ID'].isin(valid_list)].reset_index(drop=True)
+    test_df = df[df['ID'] .isin(test_list)].reset_index(drop=True)
 
     if verbose:
         for datatype, df in zip(('train', 'valid', 'test'), (train_df, valid_df, test_df)):
@@ -141,6 +141,8 @@ class OCT(torch.utils.data.Dataset):
             'P60': 2,
             'P90': 3,
             'P120': 4,
+            'P150': 4,
+            'P158': 4
         }
         self.test = test_mode
         self.class_type = class_type
@@ -180,7 +182,7 @@ class OCT(torch.utils.data.Dataset):
 
         if self.test:
             return img
-        elif self.class_type == "timepoint":
+        elif self.class_type in ("timepoint", "autoencoder"):
             lbl = self.class2index[self.df.iloc[idx]['date']]
             lbl = torch.tensor(lbl)
             return img, lbl
@@ -188,7 +190,43 @@ class OCT(torch.utils.data.Dataset):
             lbl = self.df.iloc[idx]['value']
             lbl = torch.tensor(lbl).float()
             return img, lbl.unsqueeze(0)
-    
+
+
+class PairDataset(torch.utils.data.Dataset):
+    def __init__(self, df: pd.DataFrame, transform=None):
+        """
+        df: pd.Dataframe contains columns
+            'path': image path
+            'date': to transfer to label
+        """
+        self.df = df
+        self.transform = transform
+        self.basic_transform = v2.Compose(transforms=[
+            v2.PILToTensor(),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Lambda(select_first_channel),
+            ])
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        img1 = Image.open(self.df.iloc[idx]['path'])
+        img1 = self.basic_transform(img1)
+        img2 = Image.open(self.df.iloc[idx]['path2'])
+        img2 = self.basic_transform(img2)
+
+        if self.transform is not None:
+            img1 = self.transform(img1)
+            img2 = self.transform(img2)
+
+        lbl = self.df.iloc[idx]['same_date']
+        lbl = torch.tensor(lbl)
+        return img1, img2, lbl
+        
 
 def get_data_transforms(input_shape: tuple[int, int]=(225, 225), preprocess: list=None, data_mean=None, data_std=None):
     """

@@ -22,7 +22,8 @@ def main(args):
     print(f"building dataloader ...")
     train_loader, valid_loader, test_loader = dataloader(batch_size=args.bs, 
                                                          augmentation=True,
-                                                         input_shape=(args.input_size, args.input_size), 
+                                                         input_shape=(args.input_size, args.input_size),
+                                                         data_type=args.data_type, 
                                                          save_dir=save_dir if args.verbose else None,
                                                          class_type=args.class_type,
                                                          stack=args.stack, stride=args.stride,
@@ -31,7 +32,7 @@ def main(args):
 
     print(f"building model ...")
     if args.class_type == "timepoint":
-        model = ResNetClassifier(num_classes=5, loss=args.loss if args.loss else 'crossentropy')
+        model = ResNetClassifier(num_classes=5, loss=args.loss if args.loss else 'crossentropy', data_type=args.data_type)
     elif args.class_type == "visual":
         model = ResNetClassifier(stack=args.stack, loss=args.loss if args.loss else 'mse')
     elif args.class_type == "autoencoder":
@@ -70,7 +71,8 @@ def main(args):
 
     print(f"start testing")
     if args.class_type == "timepoint":
-        model = model.load_from_checkpoint(os.path.join(save_dir, 'bestmodel.ckpt'), num_classes=5, stack=args.stack)
+        model = model.load_from_checkpoint(os.path.join(save_dir, 'bestmodel.ckpt'), num_classes=5, stack=args.stack, 
+                                           data_type=args.data_type)
     elif args.class_type == "visual":
         model = model.load_from_checkpoint(os.path.join(save_dir, 'bestmodel.ckpt'), stack=args.stack)
     elif args.class_type == 'autoencoder':
@@ -104,10 +106,11 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='train diverse tasks in biomedicine')
     parser.add_argument('-i', '--input-size', type=int, default=225, help="image resize shape")
+    parser.add_argument('--data-type', type=str, default='OCT', help="data type")
     parser.add_argument('--bs', type=int, default=128, help="batch size for training")
     parser.add_argument('-d', '--dir', type=str, default="results", help="folder to store training log")
     parser.add_argument('-e', '--epoch', type=int, default=10, help="train epoch")
-    parser.add_argument('--valid-steps', type=int, default=50, help="number of train steps for running validation")
+    parser.add_argument('--valid-steps', type=int, default=None, help="number of train steps for running validation")
     parser.add_argument('-p', '--patience', type=int, default=10, help="patience for early stopping")
     parser.add_argument('-t', '--class-type', type=str, default="timepoint", help="timepoint or visual")
     parser.add_argument('--stack', type=int, default=None, help="stack")

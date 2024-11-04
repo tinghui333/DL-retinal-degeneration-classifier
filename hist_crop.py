@@ -7,12 +7,11 @@ import cv2
 from matplotlib import pyplot as plt
 import matplotlib.patches as patches
 import random
-from tqdm import tqdm
 
 
 def main():
     # Set up data path
-    root_dir = './data/Histology_Images_CV/'
+    root_dir = './data/Histology_Images_CV'
     date_list = ['AI_P20', 'AI_P40', 'AI_P60', 'AI_P90', 'AI_P120', 'AI_P150']
     save_dir = os.path.join(root_dir, 'patch_images')
 
@@ -32,7 +31,7 @@ def main():
         path_dict = defaultdict(int)
         print(date)
         if not os.path.isdir(os.path.join(save_dir, date)):
-            os.mkdir(os.path.join(save_dir, date))
+            os.makedirs(os.path.join(save_dir, date))
 
         img_list = glob(os.path.join(root_dir, date, '*', '*', '*.tif'))
 
@@ -59,7 +58,7 @@ def main():
             
             box_idx = []
             thr = 0.1
-            if date == 'AI_P150':
+            if date in ('AI_P120', 'AI_P150'):
                 thr = 0.05
 
             # Step 3: crop patches

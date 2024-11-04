@@ -6,13 +6,14 @@ from torchvision.models import resnet18
 
 
 class ResNetClassifier(pl.LightningModule):
-    def __init__(self, num_classes: int=1, learning_rate=1e-3, stack=None, loss='crossentropy'):
+    def __init__(self, num_classes: int=1, learning_rate=1e-3, stack=None, loss='crossentropy', data_type='OCT'):
         super().__init__()
-        self.resnet = resnet18(pretrained=True)
+        # self.resnet = resnet18(pretrained=True)
+        self.resnet = resnet18(pretrained=False)
         # since the input is grayscale image, only 1 channel is needed
         if stack:
             self.resnet.conv1 = nn.Conv2d(stack, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-        else:
+        elif data_type=='OCT':
             self.resnet.conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
             pretrained_weights = resnet18(pretrained=True).conv1.weight.data
             self.resnet.conv1.weight.data = pretrained_weights.mean(dim=1, keepdim=True)

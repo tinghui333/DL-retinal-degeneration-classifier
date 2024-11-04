@@ -8,14 +8,17 @@ from torchvision.transforms import v2
 from tqdm import tqdm
 
 def deserilizer(batch_size: int, augmentation: bool=False, input_shape=(225, 225),
-                remove_same_case: bool=True, num_workers: int=4, 
+                data_type: str='OCT', remove_same_case: bool=True, num_workers: int=4, 
                 save_dir: str=None, class_type: str="timepoint", 
                 stack: int=None, stride: int=None,
                 preprocess: list=None,
                 verbose: bool=False):
 
-    df = data_collector(data_dir='./data/OCT-Tiff', remove_same_case=remove_same_case, class_type=class_type,
-                        stack=stack, stride=stride)
+    if data_type == 'OCT':
+        df = data_collector(data_dir='./data/OCT-Tiff', remove_same_case=remove_same_case, class_type=class_type,
+                            stack=stack, stride=stride)
+    elif data_type == 'hist':
+        df = data_collector_hist(data_dir="./data/Histology_Images_CV/patch_images")
 
     train_df, valid_df, test_df = data_split(df, verbose=verbose)
     if save_dir:
@@ -25,9 +28,10 @@ def deserilizer(batch_size: int, augmentation: bool=False, input_shape=(225, 225
 
     # data_mean, data_std = online_mean_and_sd(torch.utils.data.DataLoader(OCT(df=pd.concat([train_df, valid_df]), transform=None), shuffle=False, batch_size=128))
     # data_mean, data_std = [0.3193], [0.1314]
+    data_mean, data_std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
     # print(f"Getting mean {data_mean} and std {data_std}")
 
-    data_transforms = get_data_transforms(input_shape=input_shape, preprocess=preprocess, data_mean=[0.3193], data_std=[0.1314])
+    data_transforms = get_data_transforms(input_shape=input_shape, preprocess=preprocess, data_mean=data_mean, data_std=data_std)
     print(data_transforms)
     if save_dir:
         with open(os.path.join(save_dir, 'preprocessing.txt'), 'w') as f:
@@ -35,21 +39,35 @@ def deserilizer(batch_size: int, augmentation: bool=False, input_shape=(225, 225
     if not augmentation:
         data_transforms['train'] = data_transforms['val']
 
-    train_loader = torch.utils.data.DataLoader(OCT(df=train_df, class_type=class_type, 
-                                                   stack=stack, stride=stride,
-                                                   transform=data_transforms['train']), shuffle=True, 
-                                                   batch_size=batch_size, num_workers=num_workers,
-                                                   pin_memory=True)
-    valid_loader = torch.utils.data.DataLoader(OCT(df=valid_df, class_type=class_type, 
-                                                   stack=stack, stride=stride,
-                                                   transform=data_transforms['val']), shuffle=False, 
-                                                   batch_size=batch_size, num_workers=num_workers,
-                                                   pin_memory=True)
-    test_loader = torch.utils.data.DataLoader(OCT(df=test_df, class_type=class_type, 
-                                                  stack=stack, stride=stride,
-                                                  transform=data_transforms['val']), shuffle=False, 
-                                                  batch_size=batch_size, num_workers=num_workers,
-                                                  pin_memory=True)
+    if data_type == 'OCT':
+        train_loader = torch.utils.data.DataLoader(OCT(df=train_df, class_type=class_type, 
+                                                    stack=stack, stride=stride,
+                                                    transform=data_transforms['train']), shuffle=True, 
+                                                    batch_size=batch_size, num_workers=num_workers,
+                                                    pin_memory=True)
+        valid_loader = torch.utils.data.DataLoader(OCT(df=valid_df, class_type=class_type, 
+                                                    stack=stack, stride=stride,
+                                                    transform=data_transforms['val']), shuffle=False, 
+                                                    batch_size=batch_size, num_workers=num_workers,
+                                                    pin_memory=True)
+        test_loader = torch.utils.data.DataLoader(OCT(df=test_df, class_type=class_type, 
+                                                    stack=stack, stride=stride,
+                                                    transform=data_transforms['val']), shuffle=False, 
+                                                    batch_size=batch_size, num_workers=num_workers,
+                                                    pin_memory=True)
+    elif data_type == 'hist':
+        train_loader = torch.utils.data.DataLoader(Hist(df=train_df, 
+                                                    transform=data_transforms['train']), shuffle=True, 
+                                                    batch_size=batch_size, num_workers=num_workers,
+                                                    pin_memory=True)
+        valid_loader = torch.utils.data.DataLoader(Hist(df=valid_df, 
+                                                    transform=data_transforms['val']), shuffle=False, 
+                                                    batch_size=batch_size, num_workers=num_workers,
+                                                    pin_memory=True)
+        test_loader = torch.utils.data.DataLoader(Hist(df=test_df, 
+                                                    transform=data_transforms['val']), shuffle=False, 
+                                                    batch_size=batch_size, num_workers=num_workers,
+                                                    pin_memory=True)
 
     return train_loader, valid_loader, test_loader
 
@@ -103,6 +121,22 @@ def data_collector(data_dir: str="./data/OCT-Tiff", remove_same_case: bool=True,
         okr = pd.read_csv('./AI_OKR_clean.csv')
         merged_df = pd.merge(df, okr, on=['date', 'ID', 'side'], how='inner')
         return merged_df
+    
+    
+def data_collector_hist(data_dir: str="./data/Histology_Images_CV/patch_images"):
+    '''
+    data_collector_hist: find all the .png images and summarize in a pd.DataFrame
+    '''
+
+    total_img_list = glob(os.path.join(data_dir, '*', 'AI*.png'))
+    total_img_list = sorted(total_img_list)
+    date_list = [item.split('/')[4].split('_')[-1] for item in total_img_list]
+    case_list = [item.split('/')[-1].split('_')[0] for item in total_img_list]
+    id_list = [item[:-1] for item in case_list]
+    side_list = [item[-1] for item in case_list]
+    df = pd.DataFrame(zip(total_img_list, date_list, case_list, id_list, side_list), 
+                      columns=['path', 'date', 'case', 'ID', 'side'])
+    return df
 
 
 def data_split(df: pd.DataFrame, random_seed: int=0, verbose: bool=True):
@@ -192,6 +226,51 @@ class OCT(torch.utils.data.Dataset):
             return img, lbl.unsqueeze(0)
 
 
+class Hist(torch.utils.data.Dataset):
+    def __init__(self, df: pd.DataFrame, test_mode: bool=False, transform=None):
+        """
+        df: pd.Dataframe contains columns
+            'path': image path
+            'date': to transfer to label
+        """
+        self.df = df
+        self.transform = transform
+        self.class2index = {
+            'P20': 0,
+            'P40': 1, 
+            'P60': 2,
+            'P90': 3,
+            'P120': 4,
+            'P150': 4,
+            'P158': 4
+        }
+        self.test = test_mode
+        # self.basic_transform = v2.Compose(transforms=[
+        #     v2.PILToTensor(),
+        #     v2.ToDtype(torch.float32, scale=True),
+        #     ])
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        img = Image.open(self.df.iloc[idx]['path']).convert("RGB")
+        # img = self.basic_transform(img)
+
+        if self.transform is not None:
+            img = self.transform(img)
+
+        if self.test:
+            return img
+        else:
+            lbl = self.class2index[self.df.iloc[idx]['date']]
+            lbl = torch.tensor(lbl)
+            return img, lbl
+
+
 class PairDataset(torch.utils.data.Dataset):
     def __init__(self, df: pd.DataFrame, transform=None):
         """
@@ -236,11 +315,13 @@ def get_data_transforms(input_shape: tuple[int, int]=(225, 225), preprocess: lis
     valid_list = []
 
     transfer_dict = {
-        'crop': v2.RandomResizedCrop(size=input_shape, scale=(0.8, 1.0), antialias=False),
-        'resize': v2.Resize(input_shape, antialias=False),
+        'crop': v2.RandomResizedCrop(size=input_shape, scale=(0.8, 1.0), antialias=True),
+        'resize': v2.Resize(input_shape, antialias=True),
         'gaussian': v2.GaussianBlur(kernel_size=11),
         'rotate': v2.RandomRotation(degrees=5),
-        'flip': v2.RandomHorizontalFlip(p=0.5),
+        'hor_flip': v2.RandomHorizontalFlip(),
+        'ver_flip': v2.RandomVerticalFlip(),
+        'color': v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
         'normalize': v2.Normalize(mean=data_mean, std=data_std)
     }
 
@@ -255,10 +336,20 @@ def get_data_transforms(input_shape: tuple[int, int]=(225, 225), preprocess: lis
 
 
     for step in preprocess:
-        train_list.append(transfer_dict[step])
+        if step == 'flip':
+            train_list.append(transfer_dict['hor_flip'])
+            train_list.append(transfer_dict['ver_flip'])
+        elif step == 'normalize':
+            train_list.append(v2.ToTensor())
+            train_list.append(transfer_dict[step])
+        else:
+            train_list.append(transfer_dict[step])
         if step == 'crop':
             valid_list.append(transfer_dict['resize'])
-        elif step in ['gaussian', 'resize', 'normalize']:
+        elif step == 'normalize':
+            valid_list.append(v2.ToTensor())
+            valid_list.append(transfer_dict[step])
+        elif step in ['gaussian', 'resize']:
             valid_list.append(transfer_dict[step])
 
     return {

@@ -1,20 +1,29 @@
-import torch
 import os
 import pandas as pd
 from glob import glob
 from PIL import Image
+import numpy as np
+from tqdm import tqdm
+from collections import defaultdict
+
+import torch
+import torch.nn.functional as F
 from sklearn.model_selection import train_test_split
 from torchvision.transforms import v2
-from tqdm import tqdm
 
-def deserilizer(batch_size: int, augmentation: bool=False, input_shape=(225, 225),
+def deserilizer(batch_size: int, augmentation: bool=False, input_shape=(1000, 1000),
                 data_type: str='OCT', remove_same_case: bool=True, num_workers: int=4, 
                 save_dir: str=None, class_type: str="timepoint", 
                 stack: int=None, stride: int=None,
                 preprocess: list=None,
                 verbose: bool=False):
 
-    if data_type == 'OCT':
+    if class_type == 'coor':
+        global type_lbl_dict
+        global reg_lbl_dict
+        df, type_lbl_dict, reg_lbl_dict = gen_x_coor_lbl()
+
+    elif data_type == 'OCT':
         df = data_collector(data_dir='./data/OCT-Tiff', remove_same_case=remove_same_case, class_type=class_type,
                             stack=stack, stride=stride)
     elif data_type == 'hist':
@@ -27,12 +36,11 @@ def deserilizer(batch_size: int, augmentation: bool=False, input_shape=(225, 225
         test_df.to_csv(os.path.join(save_dir, 'test_df.csv'), index=False)
 
     # data_mean, data_std = online_mean_and_sd(torch.utils.data.DataLoader(OCT(df=pd.concat([train_df, valid_df]), transform=None), shuffle=False, batch_size=128))
-    # data_mean, data_std = [0.3193], [0.1314]
-    data_mean, data_std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+    data_mean, data_std = [0.3193], [0.1314]
+    # data_mean, data_std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
     # print(f"Getting mean {data_mean} and std {data_std}")
 
     data_transforms = get_data_transforms(input_shape=input_shape, preprocess=preprocess, data_mean=data_mean, data_std=data_std)
-    print(data_transforms)
     if save_dir:
         with open(os.path.join(save_dir, 'preprocessing.txt'), 'w') as f:
             f.write(repr(data_transforms))
@@ -42,17 +50,17 @@ def deserilizer(batch_size: int, augmentation: bool=False, input_shape=(225, 225
     if data_type == 'OCT':
         train_loader = torch.utils.data.DataLoader(OCT(df=train_df, class_type=class_type, 
                                                     stack=stack, stride=stride,
-                                                    transform=data_transforms['train']), shuffle=True, 
+                                                    transform=data_transforms['train'], data_type='train'), shuffle=True, 
                                                     batch_size=batch_size, num_workers=num_workers,
                                                     pin_memory=True)
         valid_loader = torch.utils.data.DataLoader(OCT(df=valid_df, class_type=class_type, 
                                                     stack=stack, stride=stride,
-                                                    transform=data_transforms['val']), shuffle=False, 
+                                                    transform=data_transforms['val'], data_type='valid'), shuffle=False, 
                                                     batch_size=batch_size, num_workers=num_workers,
                                                     pin_memory=True)
         test_loader = torch.utils.data.DataLoader(OCT(df=test_df, class_type=class_type, 
                                                     stack=stack, stride=stride,
-                                                    transform=data_transforms['val']), shuffle=False, 
+                                                    transform=data_transforms['val'], data_type='test'), shuffle=False, 
                                                     batch_size=batch_size, num_workers=num_workers,
                                                     pin_memory=True)
     elif data_type == 'hist':
@@ -143,7 +151,6 @@ def data_split(df: pd.DataFrame, random_seed: int=0, verbose: bool=True):
     '''
     data_split: split the data into train, valid, test set by id
     '''
-
     train_list, test_list = train_test_split(sorted(df['ID'].unique()), test_size=0.2, random_state=random_seed)
     train_list, valid_list = train_test_split(train_list, test_size=0.25, random_state=random_seed)
     train_df = df[df['ID'].isin(train_list)].reset_index(drop=True)
@@ -159,9 +166,60 @@ def data_split(df: pd.DataFrame, random_seed: int=0, verbose: bool=True):
     return train_df, valid_df, test_df
 
 
+def gen_x_coor_lbl(lbl_path: str='./data/lbl_x_coor.csv'):
+    '''
+    generate 2 1000x array for label
+    '''
+
+    type_transfer_dict = {
+        'G': 1,
+        'g': 1,
+        'N': 3,
+        'n': 3,
+        'na': 3,
+        '20': 2,
+        '40': 2,
+        '60': 2,
+        '90': 2
+    }
+
+    reg_transfer_dict = {
+        '20': 1, 
+        '40': 2,
+        '60': 3,
+        '90': 4
+    }
+
+    df = pd.read_csv(lbl_path)
+
+    type_lbl_dict = defaultdict()
+    reg_lbl_dict = defaultdict()
+
+    for image_path in set(df['path']):
+        assert os.path.isfile(image_path), f"{image_path} doesn't exist"
+
+        curr_df = df[df['path'] == image_path]
+        type_lbl = np.zeros((1000, ))
+        reg_lbl = np.zeros((1000, ))
+
+        type_lbl[curr_df['x1'].min(): curr_df['x2'].max()] = 3
+        for _, row in curr_df.iterrows():
+            if not pd.isna(row['label']):
+                type_lbl[row['x1']:row['x2']] = type_transfer_dict[row['label']]
+            if row['label'] in reg_transfer_dict:
+                reg_lbl[row['x1']:row['x2']] = reg_transfer_dict[row['label']]
+
+        type_lbl_dict[image_path] = type_lbl
+        reg_lbl_dict[image_path] = reg_lbl
+
+    df_processed = df.drop(columns=['label', 'x1', 'x2']).drop_duplicates().reset_index()
+
+    return df_processed, type_lbl_dict, reg_lbl_dict
+
+
 class OCT(torch.utils.data.Dataset):
     def __init__(self, df: pd.DataFrame, test_mode: bool=False, class_type: str="timepoint", transform=None,
-                 stack: int=None, stride: int=None):
+                 stack: int=None, stride: int=None, data_type: str='test'):
         """
         df: pd.Dataframe contains columns
             'path': image path
@@ -169,6 +227,7 @@ class OCT(torch.utils.data.Dataset):
         """
         self.df = df
         self.transform = transform
+        print(self.transform)
         self.class2index = {
             'P20': 0,
             'P40': 1, 
@@ -187,6 +246,7 @@ class OCT(torch.utils.data.Dataset):
             v2.ToDtype(torch.float32, scale=True),
             v2.Lambda(select_first_channel),
             ])
+        self.data_type = data_type
 
     def __len__(self):
         return len(self.df)
@@ -211,7 +271,7 @@ class OCT(torch.utils.data.Dataset):
 
             img = torch.stack(stack_img)
 
-        if self.transform is not None:
+        if self.transform is not None and self.class_type != 'coor':
             img = self.transform(img)
 
         if self.test:
@@ -224,6 +284,12 @@ class OCT(torch.utils.data.Dataset):
             lbl = self.df.iloc[idx]['value']
             lbl = torch.tensor(lbl).float()
             return img, lbl.unsqueeze(0)
+        elif self.class_type == 'coor':
+            lbl_type = torch.tensor(type_lbl_dict[self.df.iloc[idx]['path']])
+            lbl_reg = torch.tensor(reg_lbl_dict[self.df.iloc[idx]['path']]).float()
+            if self.data_type == 'train':
+                img, lbl_type, lbl_reg = augment(img, lbl_type, lbl_reg)
+            return img, lbl_type, lbl_reg
 
 
 class Hist(torch.utils.data.Dataset):
@@ -344,6 +410,7 @@ def get_data_transforms(input_shape: tuple[int, int]=(225, 225), preprocess: lis
             train_list.append(transfer_dict[step])
         else:
             train_list.append(transfer_dict[step])
+            
         if step == 'crop':
             valid_list.append(transfer_dict['resize'])
         elif step == 'normalize':
@@ -356,6 +423,120 @@ def get_data_transforms(input_shape: tuple[int, int]=(225, 225), preprocess: lis
         "train": v2.Compose(transforms=train_list),
         "val": v2.Compose(transforms=valid_list)
     }
+
+
+def horizontal_flip(image, label1, label2):
+    flipped_image = torch.flip(image, dims=[2]) 
+    flipped_label1 = torch.flip(label1, dims=[0])
+    flipped_label2 = torch.flip(label2, dims=[0])
+    return flipped_image, flipped_label1, flipped_label2
+
+
+def rotate(image, type_label, reg_label):
+    degrees = torch.randint(-10, 11, (1,)).item()
+    h, w = image.shape[1], image.shape[2]
+    center = (w // 2, h // 2)
+
+    image = v2.functional.rotate(image, angle=degrees, expand=False, interpolation=v2.InterpolationMode.BILINEAR)
+
+    x_indices = torch.arange(0, w)
+    radians = torch.deg2rad(torch.tensor(degrees, dtype=torch.float32))
+    x_shift = ((x_indices - center[0]) * torch.cos(radians) - 
+                (h // 2) * torch.sin(radians)).round().long() + center[0]
+    x_shift = torch.clamp(x_shift, 0, w - 1) 
+
+    type_label = type_label[x_shift]
+    reg_label = reg_label[x_shift]
+    return image, type_label, reg_label
+
+
+def shift(image, type_label, reg_label, max_shift=200):
+    """
+    Perform random shifting of the image in both horizontal (x) and vertical (y) directions,
+    and adjust labels accordingly.
+
+    Args:
+        image (torch.Tensor): Input image, shape (C, H, W).
+        type_label (torch.Tensor): Type label, shape (W,).
+        reg_label (torch.Tensor): Regression label, shape (W,).
+        max_shift (int): Maximum number of pixels to shift in any direction.
+
+    Returns:
+        torch.Tensor, torch.Tensor, torch.Tensor: Shifted image and labels.
+    """
+    _, height, width = image.shape
+
+    shift_x = torch.randint(-max_shift, max_shift + 1, (1,)).item()
+    shift_y = torch.randint(-max_shift, max_shift + 1, (1,)).item()
+
+    shifted_image = torch.zeros_like(image)
+
+    if shift_x > 0:
+        x_start_src, x_end_src = 0, width - shift_x
+        x_start_dst, x_end_dst = shift_x, width
+    else:
+        x_start_src, x_end_src = -shift_x, width
+        x_start_dst, x_end_dst = 0, width + shift_x
+
+    if shift_y > 0:
+        y_start_src, y_end_src = 0, height - shift_y
+        y_start_dst, y_end_dst = shift_y, height
+    else:
+        y_start_src, y_end_src = -shift_y, height
+        y_start_dst, y_end_dst = 0, height + shift_y
+
+    shifted_image[:, y_start_dst:y_end_dst, x_start_dst:x_end_dst] = \
+        image[:, y_start_src:y_end_src, x_start_src:x_end_src]
+
+    shifted_type_label = torch.zeros_like(type_label)
+    shifted_reg_label = torch.zeros_like(reg_label)
+
+    if shift_x > 0:
+        shifted_type_label[shift_x:] = type_label[:-shift_x]
+        shifted_reg_label[shift_x:] = reg_label[:-shift_x]
+    elif shift_x < 0:
+        shifted_type_label[:shift_x] = type_label[-shift_x:]
+        shifted_reg_label[:shift_x] = reg_label[-shift_x:]
+    else:
+        shifted_type_label = type_label
+        shifted_reg_label = reg_label
+
+    return shifted_image, shifted_type_label, shifted_reg_label
+
+
+def resize(image, type_label, reg_label):
+    target_width = torch.randint(900, 1100, (1,)).item()
+    image = F.interpolate(image.unsqueeze(0), size=(target_width, target_width), mode='bilinear', align_corners=False).squeeze(0)
+    type_label = F.interpolate(type_label.unsqueeze(0).unsqueeze(0).float(), size=(target_width,), mode='nearest').squeeze(0).squeeze(0).long()
+    reg_label = F.interpolate(reg_label.unsqueeze(0).unsqueeze(0).float(), size=(target_width,), mode='nearest').squeeze(0).squeeze(0)
+
+    return image, type_label, reg_label
+
+
+def augment(image, type_label, reg_label):
+    """
+    Augmentation logic specific to coor type.
+    """
+
+    if torch.rand(1).item() > 0.5:
+        image, type_label, reg_label = resize(image, type_label, reg_label)
+
+    if torch.rand(1).item() > 0.5:
+        image, type_label, reg_label = rotate(image, type_label, reg_label)
+
+    max_shift = 100
+    if torch.rand(1).item() > 0.5:
+        image, type_label, reg_label = shift(image, type_label, reg_label, max_shift)
+        
+    if torch.rand(1).item() > 0.5:
+        image, type_label, reg_label = horizontal_flip(image, type_label, reg_label)
+
+    original_width = 1000 
+    image = F.interpolate(image.unsqueeze(0), size=(original_width, original_width), mode='bilinear', align_corners=False).squeeze(0)
+    type_label = F.interpolate(type_label.unsqueeze(0).unsqueeze(0).float(), size=(original_width,), mode='nearest').squeeze(0).squeeze(0).long()
+    reg_label = F.interpolate(reg_label.unsqueeze(0).unsqueeze(0).float(), size=(original_width,), mode='nearest').squeeze(0).squeeze(0)
+
+    return image, type_label, reg_label
 
 
 def select_first_channel(img):

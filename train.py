@@ -35,6 +35,8 @@ def main(args):
         model = ResNetClassifier(num_classes=5, loss=args.loss if args.loss else 'crossentropy', data_type=args.data_type)
     elif args.class_type == "visual":
         model = ResNetClassifier(stack=args.stack, loss=args.loss if args.loss else 'mse')
+    elif args.class_type == "coor":
+        model = ResNetClassifier(loss='coor')
     elif args.class_type == "autoencoder":
         model = AutoEncoder(input_shape=(args.input_size, args.input_size))
 
@@ -75,21 +77,46 @@ def main(args):
                                            data_type=args.data_type)
     elif args.class_type == "visual":
         model = model.load_from_checkpoint(os.path.join(save_dir, 'bestmodel.ckpt'), stack=args.stack)
+    elif args.class_type == "coor":
+        model = model.load_from_checkpoint(os.path.join(save_dir, 'bestmodel.ckpt'), loss='coor')
     elif args.class_type == 'autoencoder':
         sys.exit("Stopping the program as class_type is 'autoencoder'")
-    model.eval()
-    predictions = []
-    groundtrues = []
-    for X, y in test_loader:
-        with torch.no_grad():
-            outputs = model(X.cuda())
-            predictions.append(outputs.cpu())
-            groundtrues.append(y)
 
-    predictions = np.concatenate(predictions)
-    groundtrues = np.concatenate(groundtrues)
-    np.save(os.path.join(save_dir, 'pred.npy'), predictions)
-    np.save(os.path.join(save_dir, 'gt.npy'), groundtrues)
+    model.eval()
+
+    if args.class_type == "coor":
+        predictions1 = []
+        predictions2 = []
+        groundtrues1 = []
+        groundtrues2 = []
+        for X, y1, y2 in test_loader:
+            with torch.no_grad():
+                output1, output2 = model(X.cuda())
+                predictions1.append(output1.cpu().argmax(axis=2))
+                predictions2.append(output2.cpu())
+                groundtrues1.append(y1)
+                groundtrues2.append(y2)
+
+        for save_name, item in zip(['pred1', 'pred2', 'gt1', 'gt2'], [predictions1, predictions2, groundtrues1, groundtrues2]):   
+            save_npy = np.concatenate(item, axis=0)
+            print(f'{save_name}: {np.shape(save_npy)}')
+            np.save(os.path.join(save_dir, f'{save_name}.npy'), save_npy)
+
+        # mse_loss = np.mean((np.abs(np.concatenate(groundtrues2) - np.concatenate(predictions2))) ** 2)
+        # mae_loss = np.mean(np.abs(np.concatenate(groundtrues2) - np.concatenate(predictions2)))
+        # print(f"MSE: {mse_loss} | MAE: {mae_loss}")
+    else:
+        predictions = []
+        groundtrues = []
+        for X, y in test_loader:
+            with torch.no_grad():
+                outputs = model(X.cuda())
+                predictions.append(outputs.cpu())
+                groundtrues.append(y)
+        predictions = np.concatenate(predictions)
+        groundtrues = np.concatenate(groundtrues)
+        np.save(os.path.join(save_dir, 'pred.npy'), predictions)
+        np.save(os.path.join(save_dir, 'gt.npy'), groundtrues)
 
     if args.class_type == "timepoint":
         predictions = np.argmax(predictions, axis=1)

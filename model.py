@@ -8,6 +8,9 @@ from torchvision.models import resnet18
 class ResNetClassifier(pl.LightningModule):
     def __init__(self, num_classes: int=1, learning_rate=1e-3, stack=None, loss='crossentropy', data_type='OCT'):
         super().__init__()
+
+        self.loss = loss
+
         # self.resnet = resnet18(pretrained=True)
         self.resnet = resnet18(pretrained=False)
         # since the input is grayscale image, only 1 channel is needed
@@ -18,7 +21,13 @@ class ResNetClassifier(pl.LightningModule):
             pretrained_weights = resnet18(pretrained=True).conv1.weight.data
             self.resnet.conv1.weight.data = pretrained_weights.mean(dim=1, keepdim=True)
 
-        self.resnet.fc = nn.Linear(self.resnet.fc.in_features, num_classes)
+        if loss=='coor':
+            self.resnet.fc = nn.Identity()
+            self.type_head = nn.Linear(512, 1000 * 4) # Output for 1000 points, 4 classes (background, grafted, meaningful, NA)
+            self.regression_head = nn.Linear(512, 1000)  # Output for 1000 regression scores (only meaningful regions)
+        else:
+            self.resnet.fc = nn.Linear(self.resnet.fc.in_features, num_classes)
+
         if loss == 'crossentropy':
             self.loss_fn = nn.CrossEntropyLoss()
         elif loss == 'ordinalcrossentropy':
@@ -27,16 +36,29 @@ class ResNetClassifier(pl.LightningModule):
             self.loss_fn = nn.MSELoss()
         elif loss == 'mae':
             self.loss_fn = nn.L1Loss()
+        elif loss == 'coor':
+            self.loss_fn = MixedLoss()
 
         self.learning_rate = learning_rate
 
     def forward(self, x):
-        return self.resnet(x)
+        if self.loss == 'coor':
+            features = self.resnet(x)
+            type_logits = self.type_head(features).view(-1, 1000, 4)
+            degeneration_scores = self.regression_head(features)
+            return type_logits, degeneration_scores
+        else: 
+            return self.resnet(x)
     
     def step(self, batch, kind: str, **kwargs):
-        x, y = batch
-        y_pred = self(x)
-        loss = self.loss_fn(y_pred, y)
+        if self.loss == 'coor':
+            x, y1, y2 = batch
+            y_pred1, y_pred2 = self(x)
+            loss = self.loss_fn(y_pred1, y_pred2, y1, y2)
+        else:
+            x, y = batch
+            y_pred = self(x)
+            loss = self.loss_fn(y_pred, y)
         self.log(f'{kind}_loss', loss, **kwargs)
         if kind == 'train':
             return loss
@@ -55,6 +77,28 @@ class ResNetClassifier(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
         return optimizer
+
+
+class MixedLoss(nn.Module):
+    def __init__(self):
+        super(MixedLoss, self).__init__()
+        self.classification_loss = nn.CrossEntropyLoss(weight=torch.tensor([1.0, 2.0, 1.0, 0.1]))
+        self.regression_loss = nn.MSELoss()
+
+    def forward(self, type_logits, degeneration_scores, type_labels, regression_labels):
+        type_labels = type_labels.long()
+        type_loss = self.classification_loss(type_logits.permute(0, 2, 1), type_labels)
+        print("Type Loss:", type_loss.item())
+
+        mask = (type_labels == 2)  # meaningful regions only
+        if mask.sum() > 0: 
+            regression_loss = self.regression_loss(degeneration_scores[mask], regression_labels[mask])
+        else:
+            regression_loss = torch.tensor(0.0, dtype=torch.float32, device=degeneration_scores.device)
+        print("Regression Loss:", regression_loss.item())
+
+        total_loss = 0.5 * type_loss + 0.5 * regression_loss
+        return total_loss
 
 
 class OrdinalCrossEntropyLoss(nn.Module):
